@@ -88,6 +88,24 @@ export function addCommand(program: Command): void {
           });
         }
 
+        // 4.5 自定义参数
+        const customParams = await interactionPrompts.promptCustomParameters(
+          workflowJson,
+          extractedParams
+        );
+
+        if (customParams.length > 0) {
+          const customDefaults = await interactionPrompts.promptParameterDefaults(customParams);
+          customParams.forEach((param) => {
+            if (customDefaults[param.id] !== undefined) {
+              param.defaultValue = customDefaults[param.id];
+            }
+          });
+
+          extractedParams.push(...customParams);
+          console.log(chalk.green(`✓ 已添加 ${customParams.length} 个自定义参数`));
+        }
+
         // 5. 构建工作流配置
         spinner.start('保存工作流...');
         const workflowConfig = {
