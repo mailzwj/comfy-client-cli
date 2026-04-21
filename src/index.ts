@@ -47,8 +47,8 @@ ${chalk.cyan('示例:')}
   $ ccc delete my-workflow             删除工作流
 
 ${chalk.cyan('资源:')} 
-  文档：https://github.com/your-repo/comfy-client-cli
-  问题反馈：https://github.com/your-repo/comfy-client-cli/issues
+  文档：https://github.com/mailzwj/comfy-client-cli
+  问题反馈：https://github.com/mailzwj/comfy-client-cli/issues
 `);
 
 // 解析命令行参数
