@@ -38,9 +38,9 @@ ${chalk.cyan('示例:')}
   $ ccc update my-workflow --params    更新参数默认值
   $ ccc delete my-workflow             删除工作流
 
-${chalk.cyan('资源:')} 
-  文档：https://github.com/your-repo/comfy-client-cli
-  问题反馈：https://github.com/your-repo/comfy-client-cli/issues
+${chalk.cyan('资源:')}
+  文档：https://github.com/mailzwj/comfy-client-cli
+  问题反馈：https://github.com/mailzwj/comfy-client-cli/issues
 `);
 // 解析命令行参数
 program.parse();
