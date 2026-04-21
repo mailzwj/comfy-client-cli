@@ -90,11 +90,21 @@ export class ComfyUIClient {
      * 提交工作流
      */
     async submitPrompt(prompt, clientId = `cli-${Date.now()}`) {
-        const response = await this.client.post('/prompt', {
-            prompt,
-            client_id: clientId,
-        });
-        return response.data.prompt_id;
+        try {
+            const response = await this.client.post('/prompt', {
+                prompt,
+                client_id: clientId,
+            });
+            return response.data.prompt_id;
+        }
+        catch (error) {
+            if (error.response?.data) {
+                const data = error.response.data;
+                const details = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+                throw new Error(`ComfyUI 拒绝了工作流 (${error.response.status}): ${details}`);
+            }
+            throw error;
+        }
     }
     /**
      * 获取任务队列状态
@@ -139,8 +149,8 @@ export class ComfyUIClient {
                 await mkdir(join(outputDir, subfolder), { recursive: true });
                 const writer = createWriteStream(outputPath);
                 response.data.pipe(writer);
-                await new Promise((_, reject) => {
-                    writer.on('finish', () => { });
+                await new Promise((resolve, reject) => {
+                    writer.on('finish', () => resolve());
                     writer.on('error', reject);
                 });
             }
