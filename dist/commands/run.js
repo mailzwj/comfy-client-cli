@@ -62,12 +62,20 @@ export function runCommand(program) {
         spinner.succeed('工作流准备完成');
         // 5. 提交到 ComfyUI
         spinner.start('提交任务到 ComfyUI...');
-        const promptId = await client.submitPrompt(workflowJson);
+        let promptId;
+        try {
+            promptId = await client.submitPrompt(workflowJson);
+        }
+        catch (error) {
+            spinner.fail('提交任务失败');
+            console.error(chalk.red(`\n✗ ${error.message || error}`));
+            process.exit(1);
+        }
         spinner.succeed('任务已提交!');
         console.log(chalk.cyan(`  任务 ID: ${promptId}`));
         console.log('');
         // 6. 等待完成
-        spinner.text = '正在生成中...';
+        spinner.start('正在生成中...');
         const result = await client.waitForCompletion(promptId);
         spinner.succeed('生成完成!');
         // 7. 下载结果
@@ -107,6 +115,10 @@ function replaceParameters(workflowJson, parameters, answers) {
                 result[nodeId].inputs[inputName] = evaluateTemplate(param.template, answers);
             }
             else {
+                // 种子值 -1 表示随机，生成一个随机种子
+                if (inputName === 'seed' && value === -1) {
+                    value = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+                }
                 result[nodeId].inputs[inputName] = value;
             }
         }
