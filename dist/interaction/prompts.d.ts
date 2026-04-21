@@ -30,6 +30,22 @@ export declare class InteractionPrompts {
      */
     confirm(message: string, defaultValue?: boolean): Promise<boolean>;
     /**
+     * 自定义参数交互流程：引导用户从工作流中选择任意节点输入作为可配置参数
+     */
+    promptCustomParameters(workflowJson: Record<string, any>, existingParams: Parameter[]): Promise<Parameter[]>;
+    /**
+     * 选择工作流节点
+     */
+    private promptSelectNode;
+    /**
+     * 选择节点的输入参数（过滤连线和已有参数）
+     */
+    private promptSelectInput;
+    /**
+     * 收集自定义参数的属性信息
+     */
+    private promptCustomParamProperties;
+    /**
      * 创建参数问题的辅助方法
      */
     private createParameterQuestion;
