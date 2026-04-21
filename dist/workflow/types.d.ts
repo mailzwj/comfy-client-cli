@@ -22,6 +22,7 @@ export interface Parameter {
     max?: number;
     required: boolean;
     template?: string;
+    promptType?: 'positive' | 'negative';
 }
 export interface NodeConfig {
     nodeId: string;
