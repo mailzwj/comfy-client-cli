@@ -13,6 +13,10 @@ export declare class ParameterExtractor {
      */
     extract(workflowJson: Record<string, any>): Parameter[];
     /**
+     * 通过 KSampler 节点的 positive/negative 输入连接，构建 CLIPTextEncode 节点的提示词类型映射
+     */
+    private buildPromptTypeMap;
+    /**
      * 提取提示词参数
      */
     private extractPromptParams;
