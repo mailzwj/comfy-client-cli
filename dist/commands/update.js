@@ -22,18 +22,21 @@ export function updateCommand(program) {
             process.exit(1);
         }
         const updates = {};
-        // 2. 更新基本信息
+        // 2. 更新基本信息（仅在显式传入 --name 或未传 --params 时才触发）
         if (options.name) {
             updates.name = options.name;
+            if (options.description !== undefined) {
+                updates.description = options.description;
+            }
         }
-        else {
+        else if (!options.params) {
+            // 没有传任何选项时，交互式修改名称和描述
             const answers = await interactionPrompts.promptWorkflowInfo(workflow.name, workflow.description || '');
             updates.name = answers.name;
             updates.description = answers.description;
         }
-        // 3. 更新参数默认值
+        // 3. 更新参数默认值（停止 spinner 后再交互）
         if (options.params) {
-            const spinner = ora('更新参数默认值...').start();
             const newDefaults = await interactionPrompts.promptParameterDefaults(workflow.parameters);
             // 更新参数默认值
             const updatedParams = workflow.parameters.map((param) => ({
@@ -41,7 +44,6 @@ export function updateCommand(program) {
                 defaultValue: newDefaults[param.id] ?? param.defaultValue,
             }));
             updates.parameters = updatedParams;
-            spinner.succeed('参数默认值已更新');
         }
         // 4. 保存更新
         const spinner = ora('保存更新...').start();
