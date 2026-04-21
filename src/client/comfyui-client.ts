@@ -32,7 +32,7 @@ export interface StatusEvent {
 export class ComfyUIClient {
   private client: AxiosInstance;
   private ws?: WebSocket;
-  private config: ComfyUIClientConfig;
+  private config: Required<Pick<ComfyUIClientConfig, 'baseUrl'>> & Omit<ComfyUIClientConfig, 'baseUrl'>;
 
   constructor(config: ComfyUIClientConfig = {}) {
     this.config = {
@@ -58,7 +58,7 @@ export class ComfyUIClient {
 
   connectWebSocket(): void {
     const wsUrl = this.config.baseUrl.replace('http', 'ws') + '/ws';
-    
+
     this.ws = new WebSocket(wsUrl);
     const ws = this.ws as WebSocket; // 类型断言
 
@@ -131,11 +131,20 @@ export class ComfyUIClient {
     prompt: Record<string, any>,
     clientId = `cli-${Date.now()}`
   ): Promise<string> {
-    const response = await this.client.post<PromptResponse>('/prompt', {
-      prompt,
-      client_id: clientId,
-    });
-    return response.data.prompt_id;
+    try {
+      const response = await this.client.post<PromptResponse>('/prompt', {
+        prompt,
+        client_id: clientId,
+      });
+      return response.data.prompt_id;
+    } catch (error: any) {
+      if (error.response?.data) {
+        const data = error.response.data;
+        const details = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        throw new Error(`ComfyUI 拒绝了工作流 (${error.response.status}): ${details}`);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -200,8 +209,8 @@ export class ComfyUIClient {
         const writer = createWriteStream(outputPath);
         response.data.pipe(writer);
 
-        await new Promise((_, reject) => {
-          writer.on('finish', () => {});
+        await new Promise<void>((resolve, reject) => {
+          writer.on('finish', () => resolve());
           writer.on('error', reject);
         });
       }
