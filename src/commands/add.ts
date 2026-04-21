@@ -27,11 +27,11 @@ export function addCommand(program: Command): void {
         // 1. 读取工作流文件
         spinner.text = '读取工作流文件...';
         const absolutePath = path.resolve(workflowFile);
-        
+
         try {
           await fs.access(absolutePath);
         } catch {
-          console.error(chalk.red('\n✗ 错误：工作流文件不存在')); 
+          console.error(chalk.red('\n✗ 错误：工作流文件不存在'));
           console.error(chalk.yellow(`  路径：${absolutePath}`));
           process.exit(1);
         }
@@ -57,16 +57,25 @@ export function addCommand(program: Command): void {
           );
         }
 
-        // 3. 交互获取信息
-        spinner.text = '收集工作流信息...';
-        const { name, description } = await interactionPrompts.promptWorkflowInfo(
-          options.name || path.basename(workflowFile, '.json'),
-          options.description || ''
-        );
+        // 3. 交互获取信息（需要停止 spinner，否则会阻塞交互式输入）
+        spinner.stop();
+        let name: string;
+        let description: string;
+
+        if (options.name) {
+          name = options.name;
+          description = options.description || '';
+        } else {
+          const answers = await interactionPrompts.promptWorkflowInfo(
+            path.basename(workflowFile, '.json'),
+            options.description || ''
+          );
+          name = answers.name;
+          description = answers.description;
+        }
 
         // 4. 收集参数默认值
         if (extractedParams.length > 0) {
-          spinner.text = '设置参数默认值...';
           const defaults = await interactionPrompts.promptParameterDefaults(
             extractedParams
           );
@@ -80,7 +89,7 @@ export function addCommand(program: Command): void {
         }
 
         // 5. 构建工作流配置
-        spinner.text = '保存工作流...';
+        spinner.start('保存工作流...');
         const workflowConfig = {
           name,
           description,
