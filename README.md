@@ -15,7 +15,7 @@
 ### 方式一：从源码安装（推荐）
 
 ```bash
-cd ~/.openclaw/workspace/comfy-client-cli
+cd comfy-client-cli
 npm install
 npm link
 ```
@@ -23,7 +23,7 @@ npm link
 ### 方式二：直接运行
 
 ```bash
-cd ~/.openclaw/workspace/comfy-client-cli
+cd comfy-client-cli
 npm install
 npx tsx src/index.ts --help
 ```
