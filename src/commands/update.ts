@@ -30,10 +30,14 @@ export function updateCommand(program: Command): void {
 
       const updates: Record<string, any> = {};
 
-      // 2. 更新基本信息
+      // 2. 更新基本信息（仅在显式传入 --name 或未传 --params 时才触发）
       if (options.name) {
         updates.name = options.name;
-      } else {
+        if (options.description !== undefined) {
+          updates.description = options.description;
+        }
+      } else if (!options.params) {
+        // 没有传任何选项时，交互式修改名称和描述
         const answers = await interactionPrompts.promptWorkflowInfo(
           workflow.name,
           workflow.description || ''
@@ -42,9 +46,8 @@ export function updateCommand(program: Command): void {
         updates.description = answers.description;
       }
 
-      // 3. 更新参数默认值
+      // 3. 更新参数默认值（停止 spinner 后再交互）
       if (options.params) {
-        const spinner = ora('更新参数默认值...').start();
         const newDefaults = await interactionPrompts.promptParameterDefaults(
           workflow.parameters
         );
@@ -56,7 +59,6 @@ export function updateCommand(program: Command): void {
         }));
 
         updates.parameters = updatedParams;
-        spinner.succeed('参数默认值已更新');
       }
 
       // 4. 保存更新
