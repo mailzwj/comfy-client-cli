@@ -30,6 +30,7 @@ export interface Parameter {
   max?: number;                  // 最大值（number 类型）
   required: boolean;
   template?: string;             // 提示词模板变量
+  promptType?: 'positive' | 'negative';  // 提示词类型（仅用于 CLIPTextEncode）
 }
 
 // ==================== 节点配置 ====================
