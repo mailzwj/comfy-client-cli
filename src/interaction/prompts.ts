@@ -3,8 +3,18 @@
  */
 
 import inquirer from 'inquirer';
+import chalk from 'chalk';
 import type { Parameter } from '../workflow/types.js';
 import { ParameterType } from '../workflow/types.js';
+
+/**
+ * 根据值的类型推断参数类型
+ */
+function inferParameterType(value: any): ParameterType {
+  if (typeof value === 'number') return ParameterType.NUMBER;
+  if (typeof value === 'boolean') return ParameterType.BOOLEAN;
+  return ParameterType.TEXT;
+}
 
 // ==================== 交互提示 ====================
 
@@ -103,6 +113,177 @@ export class InteractionPrompts {
     ]);
 
     return answers.confirmed;
+  }
+
+  /**
+   * 自定义参数交互流程：引导用户从工作流中选择任意节点输入作为可配置参数
+   */
+  async promptCustomParameters(
+    workflowJson: Record<string, any>,
+    existingParams: Parameter[]
+  ): Promise<Parameter[]> {
+    // 检查工作流中是否有节点
+    const nodeEntries = Object.entries(workflowJson).filter(
+      ([_, data]) => data && data.class_type
+    );
+    if (nodeEntries.length === 0) return [];
+
+    const wantCustom = await this.confirm('是否添加自定义参数?', false);
+    if (!wantCustom) return [];
+
+    const customParams: Parameter[] = [];
+    let continueAdding = true;
+
+    while (continueAdding) {
+      // 选择节点
+      const node = await this.promptSelectNode(workflowJson);
+
+      // 选择输入
+      const allExisting = [...existingParams, ...customParams];
+      const input = await this.promptSelectInput(workflowJson, node.nodeId, allExisting);
+
+      if (input === null) {
+        console.log(chalk.yellow('  该节点没有可配置的输入参数'));
+        continueAdding = await this.confirm('继续添加自定义参数?', false);
+        continue;
+      }
+
+      // 收集参数属性
+      const props = await this.promptCustomParamProperties(
+        node.nodeId,
+        input.inputName,
+        input.currentValue
+      );
+
+      const param: Parameter = {
+        id: `custom_${node.nodeId}_${input.inputName}`,
+        name: props.name,
+        description: props.description || undefined,
+        type: props.type,
+        nodeId: node.nodeId,
+        inputName: input.inputName,
+        defaultValue: input.currentValue,
+        required: props.required,
+      };
+
+      customParams.push(param);
+      console.log(chalk.green(`  ✓ 已添加参数: ${param.name} (${node.classType}.${input.inputName})`));
+
+      continueAdding = await this.confirm('继续添加自定义参数?', false);
+    }
+
+    return customParams;
+  }
+
+  /**
+   * 选择工作流节点
+   */
+  private async promptSelectNode(
+    workflowJson: Record<string, any>
+  ): Promise<{ nodeId: string; classType: string }> {
+    const choices = Object.entries(workflowJson)
+      .filter(([_, data]) => data && data.class_type)
+      .map(([id, data]) => ({
+        name: `[${id}] ${data.class_type}`,
+        value: { nodeId: id, classType: data.class_type as string },
+      }));
+
+    const answers = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'node',
+        message: '请选择节点:',
+        choices,
+      },
+    ]);
+
+    return answers.node;
+  }
+
+  /**
+   * 选择节点的输入参数（过滤连线和已有参数）
+   */
+  private async promptSelectInput(
+    workflowJson: Record<string, any>,
+    nodeId: string,
+    existingParams: Parameter[]
+  ): Promise<{ inputName: string; currentValue: any } | null> {
+    const inputs = workflowJson[nodeId]?.inputs;
+    if (!inputs) return null;
+
+    const existingSet = new Set(
+      existingParams
+        .filter((p) => p.nodeId === nodeId)
+        .map((p) => p.inputName)
+    );
+
+    const choices = Object.entries(inputs)
+      .filter(([_, value]) => !Array.isArray(value)) // 排除节点连线
+      .filter(([name]) => !existingSet.has(name))     // 排除已有参数
+      .map(([name, value]) => ({
+        name: `${name} = ${JSON.stringify(value).substring(0, 60)}`,
+        value: { inputName: name, currentValue: value },
+      }));
+
+    if (choices.length === 0) return null;
+
+    const answers = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'input',
+        message: '请选择输入参数:',
+        choices,
+      },
+    ]);
+
+    return answers.input;
+  }
+
+  /**
+   * 收集自定义参数的属性信息
+   */
+  private async promptCustomParamProperties(
+    nodeId: string,
+    inputName: string,
+    currentValue: any
+  ): Promise<{ name: string; type: ParameterType; description: string; required: boolean }> {
+    const inferredType = inferParameterType(currentValue);
+
+    const typeChoices = Object.values(ParameterType).map((t) => ({
+      name: t,
+      value: t,
+    }));
+
+    const answers = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'name',
+        message: '参数显示名称:',
+        default: inputName,
+        validate: (input: string) => input.trim().length > 0 || '名称不能为空',
+      },
+      {
+        type: 'list',
+        name: 'type',
+        message: '参数类型:',
+        choices: typeChoices,
+        default: inferredType,
+      },
+      {
+        type: 'input',
+        name: 'description',
+        message: '参数描述（可选）:',
+        default: '',
+      },
+      {
+        type: 'confirm',
+        name: 'required',
+        message: '是否为必填参数?',
+        default: false,
+      },
+    ]);
+
+    return answers as { name: string; type: ParameterType; description: string; required: boolean };
   }
 
   /**
