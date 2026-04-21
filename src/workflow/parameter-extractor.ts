@@ -17,7 +17,7 @@ export class ParameterExtractor {
     'KSampler',               // 采样器节点
     'KSamplerAdvanced',       // 高级采样器节点
     'EmptyLatentImage',       // 潜空间尺寸节点
-    'CheckpointsLoaderSimple', // 检查点加载节点
+    'CheckpointLoaderSimple',  // 检查点加载节点
     'VAEDecode',              // VAE 解码节点
   ];
 
@@ -26,6 +26,9 @@ export class ParameterExtractor {
    */
   extract(workflowJson: Record<string, any>): Parameter[] {
     const parameters: Parameter[] = [];
+
+    // 构建提示词类型映射（通过 KSampler 连接关系判断正/负向）
+    const promptTypeMap = this.buildPromptTypeMap(workflowJson);
 
     // 遍历所有节点
     for (const [nodeId, nodeData] of Object.entries(workflowJson)) {
@@ -40,7 +43,7 @@ export class ParameterExtractor {
       // 根据节点类型提取参数
       switch (className) {
         case 'CLIPTextEncode':
-          parameters.push(...this.extractPromptParams(nodeId, nodeData));
+          parameters.push(...this.extractPromptParams(nodeId, nodeData, promptTypeMap));
           break;
         case 'KSampler':
         case 'KSamplerAdvanced':
@@ -49,9 +52,11 @@ export class ParameterExtractor {
         case 'EmptyLatentImage':
           parameters.push(...this.extractLatentParams(nodeId, nodeData));
           break;
-        case 'CheckpointsLoaderSimple':
-          parameters.push(this.extractCheckpointParam(nodeId, nodeData));
+        case 'CheckpointLoaderSimple': {
+          const param = this.extractCheckpointParam(nodeId, nodeData);
+          if (param) parameters.push(param);
           break;
+        }
       }
     }
 
@@ -59,30 +64,63 @@ export class ParameterExtractor {
   }
 
   /**
+   * 通过 KSampler 节点的 positive/negative 输入连接，构建 CLIPTextEncode 节点的提示词类型映射
+   */
+  private buildPromptTypeMap(workflowJson: Record<string, any>): Map<string, 'positive' | 'negative'> {
+    const typeMap = new Map<string, 'positive' | 'negative'>();
+    const samplerTypes = ['KSampler', 'KSamplerAdvanced'];
+
+    for (const [_nodeId, nodeData] of Object.entries(workflowJson)) {
+      if (!nodeData.class_type || !samplerTypes.includes(nodeData.class_type)) continue;
+
+      const inputs = nodeData.inputs || {};
+
+      // ComfyUI API 格式中，连接表示为 [nodeId, outputIndex]
+      if (Array.isArray(inputs.positive)) {
+        const connectedNodeId = String(inputs.positive[0]);
+        typeMap.set(connectedNodeId, 'positive');
+      }
+      if (Array.isArray(inputs.negative)) {
+        const connectedNodeId = String(inputs.negative[0]);
+        typeMap.set(connectedNodeId, 'negative');
+      }
+    }
+
+    return typeMap;
+  }
+
+  /**
    * 提取提示词参数
    */
   private extractPromptParams(
     nodeId: string,
-    nodeData: any
+    nodeData: any,
+    promptTypeMap: Map<string, 'positive' | 'negative'>
   ): Parameter[] {
     const inputs = nodeData.inputs || {};
+
+    // 跳过节点连接（数组表示连接到其他节点）
+    if (Array.isArray(inputs.text)) return [];
+
     const text = inputs.text || '';
 
-    // 检测是否为负面提示词（包含常见负面词汇）
-    const isNegative = this.isNegativePrompt(text);
+    // 优先通过图连接判断，回退到关键词匹配
+    const promptType = promptTypeMap.get(nodeId) ?? (this.isNegativePrompt(text) ? 'negative' : 'positive');
+    const isNegative = promptType === 'negative';
 
     return [
       {
         id: `prompt_${nodeId}`,
-        name: isNegative ? '负面提示词' : '提示词',
+        name: isNegative ? '负向提示词' : '正向提示词',
         description: isNegative
-          ? '描述不想要的内容'
-          : '描述想要生成的图像',
+          ? '描述不想要的内容（negative prompt）'
+          : '描述想要生成的图像（positive prompt）',
         type: ParameterType.TEXT,
         nodeId,
         inputName: 'text',
         defaultValue: text,
-        required: true,
+        required: !isNegative,
+        promptType,
       },
     ];
   }
@@ -95,9 +133,11 @@ export class ParameterExtractor {
     nodeData: any
   ): Parameter[] {
     const inputs = nodeData.inputs || {};
+    const params: Parameter[] = [];
 
-    return [
-      {
+    // 只提取直接值参数，跳过节点连接（数组表示连接到其他节点）
+    if (!Array.isArray(inputs.steps)) {
+      params.push({
         id: `steps_${nodeId}`,
         name: '采样步数',
         description: '生成图像的采样步数',
@@ -108,8 +148,11 @@ export class ParameterExtractor {
         min: 1,
         max: 100,
         required: false,
-      },
-      {
+      });
+    }
+
+    if (!Array.isArray(inputs.cfg)) {
+      params.push({
         id: `cfg_${nodeId}`,
         name: 'CFG Scale',
         description: '提示词遵循度',
@@ -120,8 +163,11 @@ export class ParameterExtractor {
         min: 1,
         max: 20,
         required: false,
-      },
-      {
+      });
+    }
+
+    if (!Array.isArray(inputs.seed)) {
+      params.push({
         id: `seed_${nodeId}`,
         name: '随机种子',
         description: '生成结果的随机种子',
@@ -132,8 +178,10 @@ export class ParameterExtractor {
         min: -1,
         max: Number.MAX_SAFE_INTEGER,
         required: false,
-      },
-    ];
+      });
+    }
+
+    return params;
   }
 
   /**
@@ -144,9 +192,10 @@ export class ParameterExtractor {
     nodeData: any
   ): Parameter[] {
     const inputs = nodeData.inputs || {};
+    const params: Parameter[] = [];
 
-    return [
-      {
+    if (!Array.isArray(inputs.width)) {
+      params.push({
         id: `width_${nodeId}`,
         name: '宽度',
         description: '生成图像的宽度（像素）',
@@ -157,8 +206,11 @@ export class ParameterExtractor {
         min: 64,
         max: 4096,
         required: false,
-      },
-      {
+      });
+    }
+
+    if (!Array.isArray(inputs.height)) {
+      params.push({
         id: `height_${nodeId}`,
         name: '高度',
         description: '生成图像的高度（像素）',
@@ -169,8 +221,10 @@ export class ParameterExtractor {
         min: 64,
         max: 4096,
         required: false,
-      },
-    ];
+      });
+    }
+
+    return params;
   }
 
   /**
@@ -179,8 +233,11 @@ export class ParameterExtractor {
   private extractCheckpointParam(
     nodeId: string,
     nodeData: any
-  ): Parameter {
+  ): Parameter | null {
     const inputs = nodeData.inputs || {};
+
+    // 跳过节点连接
+    if (Array.isArray(inputs.ckpt_name)) return null;
 
     return {
       id: `checkpoint_${nodeId}`,
