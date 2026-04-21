@@ -45,12 +45,21 @@ export function addCommand(program) {
             if (extractedParams.length === 0) {
                 console.warn(chalk.yellow('\n⚠ 警告：未检测到可配置参数，工作流可能无法交互式运行'));
             }
-            // 3. 交互获取信息
-            spinner.text = '收集工作流信息...';
-            const { name, description } = await interactionPrompts.promptWorkflowInfo(options.name || path.basename(workflowFile, '.json'), options.description || '');
+            // 3. 交互获取信息（需要停止 spinner，否则会阻塞交互式输入）
+            spinner.stop();
+            let name;
+            let description;
+            if (options.name) {
+                name = options.name;
+                description = options.description || '';
+            }
+            else {
+                const answers = await interactionPrompts.promptWorkflowInfo(path.basename(workflowFile, '.json'), options.description || '');
+                name = answers.name;
+                description = answers.description;
+            }
             // 4. 收集参数默认值
             if (extractedParams.length > 0) {
-                spinner.text = '设置参数默认值...';
                 const defaults = await interactionPrompts.promptParameterDefaults(extractedParams);
                 // 应用默认值
                 extractedParams.forEach((param) => {
@@ -60,7 +69,7 @@ export function addCommand(program) {
                 });
             }
             // 5. 构建工作流配置
-            spinner.text = '保存工作流...';
+            spinner.start('保存工作流...');
             const workflowConfig = {
                 name,
                 description,
