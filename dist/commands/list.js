@@ -15,6 +15,10 @@ export function listCommand(program) {
         try {
             const workflows = await workflowRegistry.list();
             if (workflows.length === 0) {
+                if (options.json) {
+                    console.log('[]');
+                    return;
+                }
                 console.log(chalk.yellow('\n⚠ 没有已注册的工作流'));
                 console.log('');
                 console.log(chalk.yellow('💡 提示:'));
