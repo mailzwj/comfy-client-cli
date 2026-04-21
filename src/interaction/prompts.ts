@@ -57,8 +57,16 @@ export class InteractionPrompts {
     parameters: Parameter[],
     useDefaults: boolean = false
   ): Promise<Record<string, any>> {
+    if (useDefaults) {
+      const defaults: Record<string, any> = {};
+      for (const param of parameters) {
+        defaults[param.id] = param.defaultValue;
+      }
+      return defaults;
+    }
+
     const questions = parameters.map((param) =>
-      this.createParameterQuestion(param, false, useDefaults)
+      this.createParameterQuestion(param, false)
     );
 
     const answers = await inquirer.prompt(questions);
@@ -102,20 +110,27 @@ export class InteractionPrompts {
    */
   private createParameterQuestion(
     param: Parameter,
-    isSettingDefault: boolean,
-    useDefaults: boolean = false
+    isSettingDefault: boolean
   ): any {
     const message = isSettingDefault
       ? `请输入 ${param.name} 的默认值:`
       : `${param.name}:`;
 
-    if (useDefaults) {
-      // 快速模式，不显示提示直接使用默认值
+    // 提示词类型使用 editor（多行输入）
+    if (param.promptType) {
+      const prefix = param.promptType === 'positive' ? '✅' : '❌';
+      const promptMessage = isSettingDefault
+        ? `${prefix} 请输入 ${param.name} 的默认值:`
+        : `${prefix} ${param.name}:`;
+
       return {
-        type: 'input',
+        type: 'editor',
         name: param.id,
-        message: `${param.name}:`,
+        message: promptMessage,
         default: param.defaultValue,
+        validate: param.required
+          ? (input: string) => input.trim().length > 0 || `${param.name} 不能为空`
+          : undefined,
       };
     }
 
@@ -144,6 +159,9 @@ export class InteractionPrompts {
           message: `${message} (${param.min ?? '-'} - ${param.max ?? '-' }):`,
           default: param.defaultValue,
           filter: (value: number) => {
+            if (isNaN(value)) {
+              return param.defaultValue;
+            }
             if (param.min !== undefined && value < param.min) {
               return param.min;
             }
