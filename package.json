@@ -24,6 +24,10 @@
     "ai",
     "image-generation"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mailzwj/comfy-client-cli.git"
+  },
   "author": "",
   "license": "MIT",
   "dependencies": {
