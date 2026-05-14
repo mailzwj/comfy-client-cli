@@ -1,147 +1,145 @@
-/**
- * add 命令 - 注册新的工作流
- */
+import { Command } from "commander";
+import inquirer from "inquirer";
+import chalk from "chalk";
+import fs from "fs";
+import path from "path";
+import { addWorkflow, generateId } from "../store.js";
+import { loadWorkflowFile, extractParams } from "../workflow.js";
+import { WorkflowParam } from "../types.js";
 
-import { Command } from 'commander';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import chalk from 'chalk';
-import ora from 'ora';
-import type { Workflow } from '../workflow/types.js';
-import { ParameterExtractor } from '../workflow/parameter-extractor.js';
-import { workflowRegistry } from '../storage/registry.js';
-import { interactionPrompts } from '../interaction/prompts.js';
-
-// ==================== add 命令 ====================
-
-export function addCommand(program: Command): void {
+export function registerAddCommand(program: Command): void {
   program
-    .command('add <workflow-file>')
-    .description('注册新的工作流')
-    .option('-n, --name <name>', '工作流名称')
-    .option('-d, --description <desc>', '工作流描述')
-    .action(async (workflowFile: string, options: any) => {
-      const spinner = ora('正在注册工作流...').start();
+    .command("add <workflow-file>")
+    .description("注册 ComfyUI 工作流文件")
+    .option("-n, --name <name>", "工作流名称")
+    .option("-d, --description <desc>", "工作流描述")
+    .action(async (workflowFile: string, options: { name?: string; description?: string }) => {
+      const filePath = path.resolve(workflowFile);
 
-      try {
-        // 1. 读取工作流文件
-        spinner.text = '读取工作流文件...';
-        const absolutePath = path.resolve(workflowFile);
-
-        try {
-          await fs.access(absolutePath);
-        } catch {
-          console.error(chalk.red('\n✗ 错误：工作流文件不存在'));
-          console.error(chalk.yellow(`  路径：${absolutePath}`));
-          process.exit(1);
-        }
-
-        const workflowContent = await fs.readFile(absolutePath, 'utf-8');
-        let workflowJson: Record<string, any>;
-
-        try {
-          workflowJson = JSON.parse(workflowContent);
-        } catch (error) {
-          console.error(chalk.red('\n✗ 错误：无效的 JSON 文件'));
-          process.exit(1);
-        }
-
-        // 2. 提取可配置参数
-        spinner.text = '提取可配置参数...';
-        const extractor = new ParameterExtractor();
-        const extractedParams = extractor.extract(workflowJson);
-
-        if (extractedParams.length === 0) {
-          console.warn(
-            chalk.yellow('\n⚠ 警告：未检测到可配置参数，工作流可能无法交互式运行')
-          );
-        }
-
-        // 3. 交互获取信息（需要停止 spinner，否则会阻塞交互式输入）
-        spinner.stop();
-        let name: string;
-        let description: string;
-
-        if (options.name) {
-          name = options.name;
-          description = options.description || '';
-        } else {
-          const answers = await interactionPrompts.promptWorkflowInfo(
-            path.basename(workflowFile, '.json'),
-            options.description || ''
-          );
-          name = answers.name;
-          description = answers.description;
-        }
-
-        // 4. 收集参数默认值
-        if (extractedParams.length > 0) {
-          const defaults = await interactionPrompts.promptParameterDefaults(
-            extractedParams
-          );
-
-          // 应用默认值
-          extractedParams.forEach((param) => {
-            if (defaults[param.id] !== undefined) {
-              param.defaultValue = defaults[param.id];
-            }
-          });
-        }
-
-        // 4.5 自定义参数
-        const customParams = await interactionPrompts.promptCustomParameters(
-          workflowJson,
-          extractedParams
-        );
-
-        if (customParams.length > 0) {
-          const customDefaults = await interactionPrompts.promptParameterDefaults(customParams);
-          customParams.forEach((param) => {
-            if (customDefaults[param.id] !== undefined) {
-              param.defaultValue = customDefaults[param.id];
-            }
-          });
-
-          extractedParams.push(...customParams);
-          console.log(chalk.green(`✓ 已添加 ${customParams.length} 个自定义参数`));
-        }
-
-        // 5. 构建工作流配置
-        spinner.start('保存工作流...');
-        const workflowConfig = {
-          name,
-          description,
-          sourceFile: absolutePath,
-          workflowJson,
-          parameters: extractedParams,
-          nodes: [], // 暂不存储节点配置
-        };
-
-        // 6. 保存到注册表
-        const savedWorkflow = await workflowRegistry.save(workflowConfig);
-
-        spinner.succeed('工作流注册成功!');
-
-        // 显示结果
-        console.log('');
-        console.log(chalk.green('✓ 工作流信息:'));
-        console.log(chalk.cyan(`  ID:         ${savedWorkflow.id}`));
-        console.log(chalk.cyan(`  名称：       ${savedWorkflow.name}`));
-        if (savedWorkflow.description) {
-          console.log(chalk.cyan(`  描述：       ${savedWorkflow.description}`));
-        }
-        console.log(chalk.cyan(`  参数数量：   ${savedWorkflow.parameters.length}`));
-        console.log(chalk.cyan(`  存储位置：   ${path.dirname(savedWorkflow.sourceFile)}`));
-
-        console.log('');
-        console.log(chalk.yellow('💡 提示:'));
-        console.log(chalk.white(`  运行此工作流：ccc run ${savedWorkflow.id}`));
-        console.log(chalk.white(`  查看工作流列表：ccc list`));
-
-      } catch (error) {
-        spinner.fail('注册失败');
-        console.error(chalk.red('\n✗ 错误:'), error);
+      if (!fs.existsSync(filePath)) {
+        console.error(chalk.red(`✗ 文件不存在: ${filePath}`));
         process.exit(1);
       }
+
+      let workflow;
+      try {
+        workflow = loadWorkflowFile(filePath);
+      } catch {
+        console.error(chalk.red("✗ 无法解析工作流 JSON 文件，请确认文件格式正确"));
+        process.exit(1);
+      }
+
+      const detectedParams = extractParams(workflow!);
+
+      console.log(chalk.cyan("\n📋 工作流基本信息\n"));
+
+      // 询问工作流名称和描述
+      const basicAnswers = await inquirer.prompt([
+        {
+          type: "input",
+          name: "name",
+          message: "请输入工作流名称：",
+          default: options.name || path.basename(filePath, ".json"),
+          when: !options.name,
+        },
+        {
+          type: "input",
+          name: "description",
+          message: "请输入工作流描述（可选）：",
+          when: !options.description,
+        },
+      ]);
+
+      const name = options.name || basicAnswers.name;
+      const description = options.description || basicAnswers.description || "";
+
+      // 处理参数配置
+      let params: WorkflowParam[] = [];
+
+      if (detectedParams.length > 0) {
+        console.log(chalk.cyan(`\n⚙️  检测到 ${detectedParams.length} 个可配置参数\n`));
+
+        const { configureParams } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "configureParams",
+            message: "是否配置参数默认值？",
+            default: true,
+          },
+        ]);
+
+        if (configureParams) {
+          for (const param of detectedParams) {
+            const { include } = await inquirer.prompt([
+              {
+                type: "confirm",
+                name: "include",
+                message: `是否绑定参数 ${chalk.yellow(param.label)}？`,
+                default: true,
+              },
+            ]);
+
+            if (!include) continue;
+
+            const { defaultValue, customLabel } = await inquirer.prompt([
+              {
+                type: "input",
+                name: "customLabel",
+                message: `参数显示名称：`,
+                default: param.label,
+              },
+              {
+                type: "input",
+                name: "defaultValue",
+                message: `默认值（当前：${param.defaultValue}）：`,
+                default: String(param.defaultValue),
+              },
+            ]);
+
+            params.push({
+              ...param,
+              label: customLabel,
+              defaultValue:
+                param.type === "number"
+                  ? Number(defaultValue)
+                  : param.type === "boolean"
+                  ? defaultValue === "true"
+                  : defaultValue,
+            });
+          }
+        }
+      } else {
+        console.log(chalk.yellow("\n⚠  未检测到标准可配置参数，工作流将使用原始配置运行\n"));
+      }
+
+      const id = generateId();
+      const now = new Date().toISOString();
+
+      addWorkflow({
+        id,
+        name,
+        description,
+        filePath,
+        params,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      console.log(chalk.green("\n✓ 工作流注册成功!"));
+      console.log(`  ${chalk.gray("ID:")}   ${chalk.bold(id)}`);
+      console.log(`  ${chalk.gray("名称：")} ${chalk.bold(name)}`);
+      if (description) console.log(`  ${chalk.gray("描述：")} ${description}`);
+      console.log(`  ${chalk.gray("参数：")} ${params.length} 个可配置参数`);
+
+      console.log(chalk.dim(`\n💡 提示：运行此工作流使用:`));
+      console.log(chalk.dim(`  ccc run ${id}`));
+      if (params.length > 0) {
+        const exampleOpts = params
+          .slice(0, 2)
+          .map((p) => `--${p.nodeId}-${p.field} "值"`)
+          .join(" ");
+        console.log(chalk.dim(`  ccc run ${id} ${exampleOpts}`));
+      }
+      console.log();
     });
 }

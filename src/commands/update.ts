@@ -1,102 +1,130 @@
-/**
- * update 命令 - 更新工作流配置
- */
+import { Command } from "commander";
+import inquirer from "inquirer";
+import chalk from "chalk";
+import { getWorkflow, updateWorkflow } from "../store.js";
+import { loadWorkflowFile, extractParams } from "../workflow.js";
+import { WorkflowParam } from "../types.js";
 
-import { Command } from 'commander';
-import chalk from 'chalk';
-import { workflowRegistry } from '../storage/registry.js';
-import { interactionPrompts } from '../interaction/prompts.js';
-import ora from 'ora';
-import type { Parameter } from '../workflow/types.js';
-
-// ==================== update 命令 ====================
-
-export function updateCommand(program: Command): void {
+export function registerUpdateCommand(program: Command): void {
   program
-    .command('update <workflow-id>')
-    .description('更新工作流配置')
-    .option('-n, --name <name>', '新的工作流名称')
-    .option('-d, --description <desc>', '新的工作流描述')
-    .option('-p, --params', '更新参数默认值')
-    .action(async (workflowId: string, options: any) => {
-      // 1. 获取工作流
-      const workflow = await workflowRegistry.get(workflowId);
+    .command("update <workflow-id>")
+    .description("更新工作流配置")
+    .option("-n, --name <name>", "新的工作流名称")
+    .option("-d, --description <desc>", "新的工作流描述")
+    .option("-p, --params", "更新参数默认值")
+    .action(
+      async (
+        workflowId: string,
+        options: { name?: string; description?: string; params?: boolean }
+      ) => {
+        const workflow = getWorkflow(workflowId);
 
-      if (!workflow) {
-        console.error(chalk.red('\n✗ 错误：找不到工作流'));
-        console.error(chalk.yellow(`  ID: ${workflowId}`));
-        process.exit(1);
-      }
+        if (!workflow) {
+          console.error(chalk.red(`✗ 未找到工作流: ${workflowId}`));
+          process.exit(1);
+        }
 
-      const updates: Record<string, any> = {};
+        const updates: Partial<typeof workflow> = {};
 
-      // 2. 更新基本信息（仅在显式传入 --name 或未传 --params 时才触发）
-      if (options.name) {
-        updates.name = options.name;
+        if (options.name) {
+          updates.name = options.name;
+        }
+
         if (options.description !== undefined) {
           updates.description = options.description;
         }
-      } else if (!options.params) {
-        // 没有传任何选项时，交互式修改名称和描述
-        const answers = await interactionPrompts.promptWorkflowInfo(
-          workflow.name,
-          workflow.description || ''
-        );
-        updates.name = answers.name;
-        updates.description = answers.description;
-      }
 
-      // 3. 更新参数默认值（停止 spinner 后再交互）
-      if (options.params) {
-        const newDefaults = await interactionPrompts.promptParameterDefaults(
-          workflow.parameters
-        );
+        if (!options.name && !options.description && !options.params) {
+          // 交互模式
+          const answers = await inquirer.prompt([
+            {
+              type: "input",
+              name: "name",
+              message: "工作流名称：",
+              default: workflow.name,
+            },
+            {
+              type: "input",
+              name: "description",
+              message: "工作流描述：",
+              default: workflow.description || "",
+            },
+            {
+              type: "confirm",
+              name: "updateParams",
+              message: "是否更新参数？",
+              default: false,
+            },
+          ]);
+          updates.name = answers.name;
+          updates.description = answers.description;
+          options.params = answers.updateParams;
+        }
 
-        // 更新参数默认值
-        const updatedParams = workflow.parameters.map((param: Parameter) => ({
-          ...param,
-          defaultValue: newDefaults[param.id] ?? param.defaultValue,
-        }));
+        if (options.params) {
+          let workflowData;
+          try {
+            workflowData = loadWorkflowFile(workflow.filePath);
+          } catch {
+            console.error(chalk.red("✗ 无法加载工作流文件"));
+            process.exit(1);
+          }
 
-        updates.parameters = updatedParams;
-      }
+          const detectedParams = extractParams(workflowData);
+          const updatedParams: WorkflowParam[] = [];
 
-      // 4. 保存更新
-      const spinner = ora('保存更新...').start();
-      const updatedWorkflow = await workflowRegistry.update(workflowId, updates);
+          for (const param of detectedParams) {
+            const existing = workflow.params.find(
+              (p) => p.nodeId === param.nodeId && p.field === param.field
+            );
 
-      if (!updatedWorkflow) {
-        spinner.fail('更新失败');
-        console.error(chalk.red('\n✗ 错误：更新工作流失败'));
-        process.exit(1);
-      }
+            const { include } = await inquirer.prompt([
+              {
+                type: "confirm",
+                name: "include",
+                message: `绑定参数 ${chalk.yellow(param.label)}？`,
+                default: !!existing,
+              },
+            ]);
 
-      spinner.succeed('工作流更新成功!');
+            if (!include) continue;
 
-      // 5. 显示更新内容
-      console.log('');
-      console.log(chalk.green('✓ 更新内容:'));
+            const { defaultValue, customLabel } = await inquirer.prompt([
+              {
+                type: "input",
+                name: "customLabel",
+                message: "参数显示名称：",
+                default: existing?.label || param.label,
+              },
+              {
+                type: "input",
+                name: "defaultValue",
+                message: "默认值：",
+                default: String(existing?.defaultValue ?? param.defaultValue),
+              },
+            ]);
 
-      if (updates.name && updates.name !== workflow.name) {
-        console.log(
-          chalk.cyan(`  名称：${workflow.name} → ${updates.name}`)
-        );
-      }
+            updatedParams.push({
+              ...param,
+              label: customLabel,
+              defaultValue:
+                param.type === "number"
+                  ? Number(defaultValue)
+                  : param.type === "boolean"
+                  ? defaultValue === "true"
+                  : defaultValue,
+            });
+          }
 
-      if (updates.description !== undefined) {
-        const oldDesc = workflow.description || '(无)';
-        const newDesc = updates.description || '(无)';
-        if (oldDesc !== newDesc) {
-          console.log(chalk.cyan(`  描述：${oldDesc} → ${newDesc}`));
+          updates.params = updatedParams;
+        }
+
+        const success = updateWorkflow(workflowId, updates);
+        if (success) {
+          console.log(chalk.green("\n✓ 工作流更新成功!\n"));
+        } else {
+          console.error(chalk.red("✗ 更新失败"));
         }
       }
-
-      if (options.params) {
-        console.log(chalk.cyan(`  参数：已更新 ${workflow.parameters.length} 个参数的默认值`));
-      }
-
-      console.log('');
-      console.log(chalk.yellow('💡 提示:'));
-      console.log(chalk.white(`  运行更新后的工作流：ccc run ${workflowId}`));
-    });
+    );
 }

@@ -1,136 +1,199 @@
-/**
- * run 命令 - 运行工作流
- */
-import * as path from 'path';
-import chalk from 'chalk';
-import ora from 'ora';
-import { workflowRegistry } from '../storage/registry.js';
-import { ComfyUIClient } from '../client/comfyui-client.js';
-import { interactionPrompts } from '../interaction/prompts.js';
-// ==================== run 命令 ====================
-export function runCommand(program) {
-    program
-        .command('run <workflow-id>')
-        .description('运行工作流')
-        .option('-o, --output <path>', '输出目录', './output')
-        .option('-y, --yes', '跳过交互，使用默认值')
-        .option('-s, --server <url>', 'ComfyUI 服务器地址', 'http://127.0.0.1:8188')
-        .action(async (workflowId, options) => {
-        // 1. 获取工作流
-        const workflow = await workflowRegistry.get(workflowId);
+import inquirer from "inquirer";
+import chalk from "chalk";
+import ora from "ora";
+import { randomUUID } from "crypto";
+import { getWorkflow } from "../store.js";
+import { loadWorkflowFile, applyParams, paramToOptionName } from "../workflow.js";
+import { queuePrompt, waitForCompletion, downloadOutputs, checkServerHealth } from "../api.js";
+export function registerRunCommand(program) {
+    const runCmd = program
+        .command("run <workflow-id>")
+        .description("运行工作流")
+        .option("-o, --output <path>", "输出目录", "./output")
+        .option("-y, --yes", "跳过交互，使用默认值")
+        .option("-s, --server <url>", "ComfyUI 服务器地址", "http://127.0.0.1:8188");
+    // 注意：动态参数需要在解析时处理，commander 不支持完全动态选项
+    // 我们通过 allowUnknownOption + 手动解析来实现
+    runCmd.allowUnknownOption(true);
+    runCmd.action(async (workflowId, options, cmd) => {
+        const workflow = getWorkflow(workflowId);
         if (!workflow) {
-            console.error(chalk.red('\n✗ 错误：找不到工作流'));
-            console.error(chalk.yellow(`  ID: ${workflowId}`));
-            console.error('');
-            console.error(chalk.yellow('💡 提示：使用 "ccc list" 查看已注册的工作流'));
+            console.error(chalk.red(`✗ 未找到工作流: ${workflowId}`));
+            console.log(chalk.dim("  使用 ccc list 查看所有已注册工作流"));
+            process.exit(1);
+            return;
+        }
+        // 解析未知参数（动态 --nodeId-field 格式）
+        const rawArgs = process.argv.slice(3); // 跳过 node, script, "run"
+        const cliParams = parseDynamicArgs(rawArgs, workflow.params);
+        // 检查服务器连通性
+        const serverUrl = options.server || "http://127.0.0.1:8188";
+        const spinner = ora("正在连接 ComfyUI 服务器...").start();
+        const healthy = await checkServerHealth(serverUrl);
+        if (!healthy) {
+            spinner.fail(chalk.red(`无法连接到服务器: ${serverUrl}`));
             process.exit(1);
         }
-        // 2. 检查 ComfyUI 服务器
-        const client = new ComfyUIClient({ baseUrl: options.server });
-        const spinner = ora('检查 ComfyUI 服务器...').start();
-        try {
-            const isHealthy = await client.healthCheck();
-            if (!isHealthy) {
-                spinner.fail('无法连接到 ComfyUI 服务器');
-                console.error(chalk.red('\n✗ 错误：无法连接到 ComfyUI 服务器'));
-                console.error(chalk.yellow(`  地址：${options.server}`));
-                console.error('');
-                console.error(chalk.yellow('💡 提示:'));
-                console.error(chalk.white('  1. 确保 ComfyUI 服务器正在运行'));
-                console.error(chalk.white('  2. 检查服务器地址是否正确'));
-                console.error(chalk.white('  3. 使用 --server 选项指定服务器地址'));
-                process.exit(1);
+        spinner.succeed(chalk.green(`已连接到服务器: ${serverUrl}`));
+        console.log(chalk.cyan(`\n📋 工作流：${workflow.name}`));
+        if (workflow.description)
+            console.log(chalk.gray(`   ${workflow.description}\n`));
+        // 收集参数值
+        const paramValues = {};
+        if (workflow.params.length > 0) {
+            const useDefaults = options.yes === true;
+            for (const param of workflow.params) {
+                const optionKey = paramToOptionName(param);
+                // 优先使用命令行传入的值
+                if (cliParams[optionKey] !== undefined) {
+                    paramValues[`${param.nodeId}.${param.field}`] = cliParams[optionKey];
+                    console.log(chalk.dim(`  ${param.label}: `) + chalk.green(String(cliParams[optionKey])) + chalk.dim(" (来自命令行)"));
+                    continue;
+                }
+                // 否则交互式询问或使用默认值
+                if (useDefaults) {
+                    paramValues[`${param.nodeId}.${param.field}`] = param.defaultValue;
+                }
+                else {
+                    const answer = await promptForParam(param);
+                    paramValues[`${param.nodeId}.${param.field}`] = answer;
+                }
             }
-            spinner.succeed('ComfyUI 服务器连接正常');
         }
-        catch (error) {
-            spinner.fail('连接 ComfyUI 服务器失败');
-            console.error(chalk.red('\n✗ 错误：'), error);
-            process.exit(1);
+        if (options.yes) {
+            // 在 -y 模式下，列出使用的值
+            if (workflow.params.length > 0) {
+                console.log(chalk.dim("\n使用以下参数（默认值或命令行指定）："));
+                for (const param of workflow.params) {
+                    const key = `${param.nodeId}.${param.field}`;
+                    const val = paramValues[key] ?? param.defaultValue;
+                    console.log(chalk.dim(`  ${param.label}: ${val}`));
+                }
+            }
         }
-        // 3. 收集用户输入
-        console.log('');
-        console.log(chalk.cyan(`📋 工作流：${workflow.name}`));
-        if (workflow.description) {
-            console.log(chalk.gray(`   ${workflow.description}`));
-        }
-        console.log('');
-        const answers = await interactionPrompts.promptRunParameters(workflow.parameters, options.yes);
-        // 4. 替换工作流中的参数
-        spinner.start('准备工作流...');
-        const workflowJson = replaceParameters(workflow.workflowJson, workflow.parameters, answers);
-        spinner.succeed('工作流准备完成');
-        // 5. 提交到 ComfyUI
-        spinner.start('提交任务到 ComfyUI...');
-        let promptId;
+        // 加载工作流并应用参数
+        let workflowData;
         try {
-            promptId = await client.submitPrompt(workflowJson);
+            workflowData = loadWorkflowFile(workflow.filePath);
         }
-        catch (error) {
-            spinner.fail('提交任务失败');
-            console.error(chalk.red(`\n✗ ${error.message || error}`));
+        catch {
+            console.error(chalk.red(`✗ 无法加载工作流文件: ${workflow.filePath}`));
+            console.error(chalk.dim("  文件可能已被移动或删除，请使用 ccc update 重新绑定文件路径"));
             process.exit(1);
         }
-        spinner.succeed('任务已提交!');
-        console.log(chalk.cyan(`  任务 ID: ${promptId}`));
-        console.log('');
-        // 6. 等待完成
-        spinner.start('正在生成中...');
-        const result = await client.waitForCompletion(promptId);
-        spinner.succeed('生成完成!');
-        // 7. 下载结果
-        const outputDir = path.resolve(options.output);
-        spinner.start(`正在下载结果到 ${outputDir}...`);
-        await client.downloadOutputs(result, outputDir);
-        spinner.succeed('结果下载完成!');
-        // 8. 显示结果
-        console.log('');
-        console.log(chalk.green('✓ 工作流执行成功!'));
-        console.log(chalk.cyan(`  输出目录：${outputDir}`));
-        // 统计生成的图像数量
-        let imageCount = 0;
-        for (const nodeOutput of Object.values(result.outputs)) {
-            imageCount += nodeOutput.images?.length || 0;
+        const finalWorkflow = applyParams(workflowData, workflow.params, paramValues);
+        // 提交任务
+        const clientId = randomUUID();
+        const submitSpinner = ora("正在提交任务到 ComfyUI...").start();
+        let promptId = "";
+        try {
+            const response = await queuePrompt(serverUrl, finalWorkflow, clientId);
+            promptId = response.prompt_id;
+            submitSpinner.succeed(chalk.green(`任务已提交！ ID: ${promptId}`));
         }
-        if (imageCount > 0) {
-            console.log(chalk.cyan(`  生成图像：${imageCount} 张`));
+        catch (err) {
+            submitSpinner.fail(chalk.red("提交任务失败"));
+            console.error(err instanceof Error ? err.message : String(err));
+            process.exit(1);
+            return;
         }
-        client.disconnectWebSocket();
+        // 等待生成完成
+        const genSpinner = ora("正在生成中...").start();
+        let progressText = "";
+        try {
+            await waitForCompletion(serverUrl, promptId, clientId, (value, max, nodeId) => {
+                progressText = `节点 ${nodeId}: ${value}/${max}`;
+                genSpinner.text = `正在生成中... ${chalk.dim(progressText)}`;
+            });
+            genSpinner.succeed(chalk.green("生成完成！"));
+        }
+        catch (err) {
+            genSpinner.fail(chalk.red("生成过程中出错"));
+            console.error(err instanceof Error ? err.message : String(err));
+            process.exit(1);
+            return;
+        }
+        // 下载输出文件
+        const outputDir = options.output || "./output";
+        const dlSpinner = ora("正在下载输出文件...").start();
+        try {
+            const files = await downloadOutputs(serverUrl, promptId, outputDir);
+            dlSpinner.succeed(chalk.green(`工作流执行成功！`));
+            console.log(chalk.dim(`  输出目录：${outputDir}`));
+            console.log(chalk.dim(`  生成图像：${files.length} 张`));
+            files.forEach((f) => console.log(chalk.dim(`    - ${f}`)));
+        }
+        catch (err) {
+            dlSpinner.fail(chalk.red("下载输出文件失败"));
+            console.error(err instanceof Error ? err.message : String(err));
+            process.exit(1);
+        }
+        console.log();
     });
 }
-// ==================== 辅助函数 ====================
+async function promptForParam(param) {
+    if (param.type === "boolean") {
+        const { value } = await inquirer.prompt([
+            {
+                type: "confirm",
+                name: "value",
+                message: param.label,
+                default: Boolean(param.defaultValue),
+            },
+        ]);
+        return value;
+    }
+    const { value } = await inquirer.prompt([
+        {
+            type: "input",
+            name: "value",
+            message: `${param.label}${param.description ? chalk.dim(" (" + param.description + ")") : ""}：`,
+            default: String(param.defaultValue),
+        },
+    ]);
+    if (param.type === "number") {
+        return Number(value);
+    }
+    return value;
+}
 /**
- * 替换工作流中的参数值
+ * 手动解析动态参数
+ * 格式：--nodeId-field value 或 --nodeId-field=value
  */
-function replaceParameters(workflowJson, parameters, answers) {
-    // 深拷贝工作流 JSON
-    const result = JSON.parse(JSON.stringify(workflowJson));
-    for (const param of parameters) {
-        const nodeId = param.nodeId;
-        const inputName = param.inputName;
-        let value = answers[param.id];
-        if (result[nodeId]?.inputs) {
-            // 处理模板变量
-            if (param.template && typeof value === 'string') {
-                result[nodeId].inputs[inputName] = evaluateTemplate(param.template, answers);
+function parseDynamicArgs(args, params) {
+    const result = {};
+    const validKeys = new Set(params.map((p) => paramToOptionName(p)));
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (!arg.startsWith("--"))
+            continue;
+        let key;
+        let value;
+        if (arg.includes("=")) {
+            [key, value] = arg.slice(2).split("=");
+        }
+        else {
+            key = arg.slice(2);
+            if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+                value = args[i + 1];
+                i++;
             }
-            else {
-                // 种子值 -1 表示随机，生成一个随机种子
-                if (inputName === 'seed' && value === -1) {
-                    value = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+        }
+        if (validKeys.has(key) && value !== undefined) {
+            const param = params.find((p) => paramToOptionName(p) === key);
+            if (param) {
+                if (param.type === "number") {
+                    result[key] = Number(value);
                 }
-                result[nodeId].inputs[inputName] = value;
+                else if (param.type === "boolean") {
+                    result[key] = value === "true" || value === "1";
+                }
+                else {
+                    result[key] = value;
+                }
             }
         }
     }
     return result;
-}
-/**
- * 计算模板字符串
- */
-function evaluateTemplate(template, values) {
-    return template.replace(/\$\{([^}]+)\}/g, (_, key) => {
-        return values[key] ?? '';
-    });
 }
 //# sourceMappingURL=run.js.map
